@@ -1,0 +1,9 @@
+Ce jeu de données enregistre les mesures de différents capteurs pour plusieurs lots de production. 
+
+- Batch name : Nom du lot de production, c'est un identifiant unique pour chaque lot
+- Step : Étape du processus de production, chaque lot passe par ces 3 étapes
+- Niveau de la cuve : Niveau dans la cuve, en litres (L)
+- Température fond de cuve : Température mesurée au fond de la cuve, en degrés Celsius (°C)
+- Température haut de colonne : Température mesurée en haut de la colonne, en degrés Celsius (°C) 
+- Vitesse d'agitation : Vitesse d'agitation du mélange, en tours par minute (RPM) 
+- Time : Horodatage de la mesure
