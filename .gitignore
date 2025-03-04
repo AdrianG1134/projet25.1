@@ -1,0 +1,43 @@
+# Fichiers système Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.bak
+
+# Fichiers système macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Fichiers système Linux
+*~
+
+# Fichiers spécifiques aux environnements de dev
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dépendances et environnements virtuels
+node_modules/
+venv/
+.env
+
+# Logs et fichiers temporaires
+logs/
+*.log
+*.out
+*.tmp
+
+dist/
+build/
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Clés SSH ou secrets potentiels
+id_rsa*
+*.pem
+*.key
+
