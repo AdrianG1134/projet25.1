@@ -4,6 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import plotly.express as px
+import seaborn as sns
+from scipy import signal
 
 # Configuration de la page
 st.set_page_config(
@@ -112,6 +114,11 @@ if 'data' in locals() and data is not None:
         X_pca = U[:, :2] * S[:2]  # Projection sur les 2 premières dimensions
     except np.linalg.LinAlgError:
         st.error("La décomposition SVD a échoué. Veuillez vérifier les données.")
+
+    explained_variance_ratio = (S**2) / np.sum(S**2)
+    variance_expliquee = np.sum(explained_variance_ratio[:2]) * 100
+    st.markdown(f"Les deux premières composantes expliquent {variance_expliquee:.2f}% de la variance totale.")
+
     
     # Création du DataFrame pour affichage
     df_clusters = pd.DataFrame({
@@ -122,17 +129,20 @@ if 'data' in locals() and data is not None:
     })
     
     # 🔹 Affichage interactif des clusters avec Plotly
-    fig = px.scatter(df_clusters, x="PC1", y="PC2", color=df_clusters["Cluster"].astype(str), 
-                     hover_data=["Batch"], title="Clustering des Batchs (PCA 2D)")
+    fig = px.scatter(df_clusters, x="PC1", y="PC2", color = df_clusters["Cluster"].astype(str), 
+                     hover_data=["Batch"], title="Clustering des Batchs (Après PCA)")
     
     # Afficher le graphique dans Streamlit
     st.plotly_chart(fig)
+
+    st.markdown("Ce clustering peut permettre de détécter des groupes de lots avec des distributions similaires ou bien d'identifier des outliers.")
     
     # Affichage des résultats
-    st.subheader("📊 Résumé des Clusters")
-    st.dataframe(stats_pivoted.style.background_gradient(cmap='coolwarm'))
-
-# Pied de page
+    with st.expander("Afficher le Résumé des clusters"):
+        st.subheader("📊 Résumé des Clusters")
+        st.dataframe(stats_pivoted.style.background_gradient(cmap='coolwarm'))
+     
+    # Pied de page
 st.markdown("---")
 st.markdown("""
 **Application développée pour Sanofi** | Version 1.0  
