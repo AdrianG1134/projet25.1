@@ -34,9 +34,10 @@ Si pas utilisation de [Snowflake](https://www.snowflake.com/fr/):
 - **pip** installé  
  ```bash
   streamlit run app.py
-
+ ```
 ### Installation  
 1. **Cloner le projet**  
    ```bash
    git clone https://github.com/AdrianG1134/projet25.1.git
    cd projet25.1
+    ```
