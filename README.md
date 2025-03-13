@@ -27,12 +27,6 @@ Approches possibles : **XGBoost**, régressions, autres modèles.
 
 ---
 
-##  Données  
- **Un fichier `.csv`** contenant les données de **264 lots**, chacun avec **1000 observations**.  
- **Un fichier `.txt`** décrivant les variables du jeu de données.  
-
----
-
 ## Installation et Utilisation  
 ### Prérequis  
 - **Python 3.x** installé  
