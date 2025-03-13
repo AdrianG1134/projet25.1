@@ -1,17 +1,10 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 from datetime import datetime
-import plotly.graph_objects as go
+import xgboost as xgb 
+import matplotlib
 import plotly.express as px
-from scipy import signal
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
-import os
 
 # Configuration de la page
 st.set_page_config(
@@ -52,65 +45,19 @@ with st.sidebar:
         data = load_data(uploaded_file)
     else:
         st.info("Veuillez charger un fichier CSV pour commencer l'analyse.")
-        # Utilisation de données factices pour la démonstration
-        st.markdown("### Mode démo")
-        if st.checkbox("Utiliser des données de démonstration"):
-            # Création de données factices basées sur la description
-            np.random.seed(42)
-            n_batches = 10
-            n_observations = 1000
-            
-            demo_data = []
-            steps = ["Préparation", "Réaction", "Purification"]
-            
-            for batch_idx in range(1, n_batches + 1):
-                batch_name = f"Batch_{batch_idx}"
-                
-                for step_idx, step in enumerate(steps):
-                    # Création de courbes de température avec variations
-                    base_temp_cuve = 20 + step_idx * 30 + np.random.normal(0, 2, n_observations) 
-                    base_temp_colonne = 15 + step_idx * 25 + np.random.normal(0, 1.5, n_observations)
-                    base_temp_reacteur = 25 + step_idx * 35 + np.random.normal(0, 2.5, n_observations)
-                    
-                    # Ajout d'une tendance (montée puis stabilisation)
-                    trend = np.zeros(n_observations)
-                    rise_point = int(n_observations * 0.2)
-                    stabilize_point = int(n_observations * 0.7)
-                    
-                    trend[:rise_point] = np.linspace(0, 15, rise_point)
-                    trend[rise_point:stabilize_point] = np.linspace(15, 20, stabilize_point - rise_point)
-                    trend[stabilize_point:] = 20
-                    
-                    # Application de la tendance
-                    temp_cuve = base_temp_cuve + trend
-                    temp_colonne = base_temp_colonne + trend * 0.8
-                    temp_reacteur = base_temp_reacteur + trend * 1.2
-                    
-                    # Création des autres mesures
-                    niveau_cuve = 50 + step_idx * 20 + np.cumsum(np.random.normal(0, 0.1, n_observations))
-                    vitesse_agitation = 100 + step_idx * 50 + np.random.normal(0, 5, n_observations)
-                    
-                    # Timestamps
-                    start_time = pd.Timestamp('2023-01-01') + pd.Timedelta(days=batch_idx-1)
-                    timestamps = [start_time + pd.Timedelta(minutes=i*5) for i in range(n_observations)]
-                    
-                    for i in range(n_observations):
-                        demo_data.append({
-                            'Batch name': batch_name,
-                            'Step': step,
-                            'Niveau de la cuve': niveau_cuve[i],
-                            'Température fond de cuve': temp_cuve[i],
-                            'Température haut de colonne': temp_colonne[i],
-                            'Température réacteur': temp_reacteur[i],
-                            'Vitesse d\'agitation': vitesse_agitation[i],
-                            'Time': timestamps[i]
-                        })
-            
-            data = pd.DataFrame(demo_data)
-            st.success("Données de démonstration chargées!")
 
 # Corps principal de l'application
 if 'data' in locals() and data is not None:
+    # Vérification des valeurs manquantes
+    missing_values = data.isnull().sum().sum()  # Total des valeurs manquantes
+    if missing_values > 0:
+        with st.expander(f"⚠️ {missing_values} valeur(s) manquante(s) détectée(s)"):
+            # Afficher les lignes où il manque des valeurs
+            missing_data = data[data.isnull().any(axis=1)]
+            st.write(f"Voici les lignes avec des valeurs manquantes :")
+            st.dataframe(missing_data)
+    else:
+        st.success("Aucune valeur manquante détectée.")
     st.header("Exploration des Données")
     
     # Statistiques de base
@@ -126,6 +73,16 @@ if 'data' in locals() and data is not None:
     if st.checkbox("Afficher l'aperçu des données"):
         st.dataframe(data.head())
 
+    # Résumé statistique des données
+    st.header("Résumé statistique des données")
+    st.subheader("📊 Statistiques Descriptives Globales")
+    st.markdown("""
+        Cette section permet d'analyser les statistiques globaux de l'ensemble de la base.
+        """)
+    stats_globales = data.describe().T # Transpose pour un affichage plus lisible
+    stats_globales = stats_globales.drop(index='Time', errors='ignore')  # Suppression de la ligne 'Time'
+    st.dataframe(stats_globales)
+    
     # Section de sélection des lots
     st.header("Visualisation des Lots")
     
@@ -138,10 +95,10 @@ if 'data' in locals() and data is not None:
         # Sélection du lot et de l'étape
         col1, col2 = st.columns(2)
         with col1:
-            selected_batch = st.selectbox("Sélectionner un lot", options=sorted(data['Batch name'].unique()))
+            selected_batch = st.selectbox("Sélectionner un lot", options=sorted(data['Batch name'].unique()), key="vis_batch")
         with col2:
             selected_step = st.selectbox("Sélectionner une étape (optionnel)", 
-                                       options=["Toutes les étapes"] + sorted(data['Step'].unique()))
+                                       options=["Toutes les étapes"] + sorted(data['Step'].unique()), key="vis_step")
         
         # Filtrage des données
         if selected_step == "Toutes les étapes":
@@ -154,30 +111,18 @@ if 'data' in locals() and data is not None:
             params = st.multiselect(
                 "Sélectionner les paramètres à visualiser",
                 options=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time']],
-                default=['Température fond de cuve', 'Température haut de colonne', 'Température réacteur']
+                default=['Température fond de cuve', 'Température haut de colonne', 'Température réacteur'],
+                key="vis_params"
             )
             
             if params:
-                # Création du graphique
-                fig = go.Figure()
+                # Création du graphique avec Streamlit native
+                if 'Time' in filtered_data.columns:
+                    chart_data = filtered_data.set_index('Time')[params]
+                else:
+                    chart_data = filtered_data[params]
                 
-                for param in params:
-                    fig.add_trace(go.Scatter(
-                        x=filtered_data.index if 'Time' not in filtered_data.columns else filtered_data['Time'],
-                        y=filtered_data[param],
-                        mode='lines',
-                        name=param
-                    ))
-                
-                fig.update_layout(
-                    title=f"Paramètres pour {selected_batch}" + (f" - {selected_step}" if selected_step != "Toutes les étapes" else ""),
-                    xaxis_title="Temps / Index",
-                    yaxis_title="Valeur",
-                    legend_title="Paramètres",
-                    height=600
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
+                st.line_chart(chart_data)
                 
                 # Option pour télécharger les données filtrées
                 csv = filtered_data.to_csv(index=False)
@@ -201,124 +146,102 @@ if 'data' in locals() and data is not None:
             selected_batches = st.multiselect(
                 "Sélectionner les lots à superposer",
                 options=sorted(data['Batch name'].unique()),
-                default=sorted(data['Batch name'].unique())[:2] if len(data['Batch name'].unique()) >= 2 else []
+                default=sorted(data['Batch name'].unique())[:2] if len(data['Batch name'].unique()) >= 2 else [],
+                key="overlay_batches"
             )
         with col2:
             overlay_step = st.selectbox("Étape pour la superposition", 
-                                     options=sorted(data['Step'].unique()))
+                                     options=sorted(data['Step'].unique()),
+                                     key="overlay_step")
         
         if selected_batches and overlay_step:
             # Sélection du paramètre à visualiser
             overlay_param = st.selectbox(
                 "Paramètre à superposer",
                 options=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time']],
-                index=data.columns.get_loc("Température fond de cuve") - 2 if "Température fond de cuve" in data.columns else 0
+                index=data.columns.get_loc("Température fond de cuve") - 2 if "Température fond de cuve" in data.columns else 0,
+                key="overlay_param"
             )
             
-            # Intervalles de temps pour l'alignement
-            st.subheader("Alignement des Courbes")
-            st.markdown("Sélectionnez les points de début et de fin pour l'alignement des courbes.")
+            # Préparation des données pour le graphique
+            overlay_data = pd.DataFrame()
             
-            # Sélectionner un lot de référence
-            reference_batch = st.selectbox("Lot de référence pour l'alignement", 
-                                        options=selected_batches)
+            # Préparer les données pour chaque lot
+            for batch in selected_batches:
+                batch_data = data[(data['Batch name'] == batch) & (data['Step'] == overlay_step)]
+                # Créer un nouveau DataFrame à chaque itération au lieu d'ajouter à un existant
+                batch_series = pd.Series(batch_data[overlay_param].values)
+                if overlay_data.empty:
+                    overlay_data = pd.DataFrame({batch: batch_series})
+                else:
+                    # Réindexer à la même longueur si nécessaire
+                    max_len = max(len(overlay_data), len(batch_series))
+                    # Étendre l'overlay_data existant si nécessaire
+                    if len(overlay_data) < max_len:
+                        overlay_data = overlay_data.reindex(range(max_len), fill_value=np.nan)
+                    # Étendre la nouvelle série si nécessaire
+                    if len(batch_series) < max_len:
+                        batch_series = batch_series.reindex(range(max_len), fill_value=np.nan)
+                    # Ajouter la nouvelle série
+                    overlay_data[batch] = batch_series
             
-            # Filtrer les données pour le lot de référence
-            ref_data = data[(data['Batch name'] == reference_batch) & (data['Step'] == overlay_step)]
-            
-            if not ref_data.empty:
-                # Slider pour sélectionner les points de début et de fin
-                time_col = ref_data.index if 'Time' not in ref_data.columns else ref_data['Time']
-                start_idx, end_idx = st.slider(
-                    "Sélectionner l'intervalle pour l'alignement",
-                    0, len(ref_data) - 1, (int(len(ref_data) * 0.1), int(len(ref_data) * 0.9)),
-                    key="alignment_slider"
+            # Afficher le graphique
+            if not overlay_data.empty:
+                # Utiliser le graphique natif de Streamlit
+                st.line_chart(overlay_data)
+                
+                # Option simple pour ajuster les données
+                st.subheader("Filtrage des données")
+                filter_start, filter_end = st.slider(
+                    "Filtrer les données (% de progression)",
+                    0, 100, (0, 100),
+                    step=5,
+                    key="filter_slider"
                 )
                 
-                # Fonction pour aligner les courbes
-                def align_curves(reference, curves_to_align, param, start_idx, end_idx):
-                    aligned_curves = {}
-                    ref_curve = reference[param].iloc[start_idx:end_idx+1].reset_index(drop=True)
+                if filter_start > 0 or filter_end < 100:
+                    st.info(f"Filtrage appliqué: {filter_start}% à {filter_end}% de la progression")
                     
-                    for batch, curve_data in curves_to_align.items():
-                        curve = curve_data[param].reset_index(drop=True)
+                    # Filtrer les données pour chaque lot
+                    filtered_overlay_data = pd.DataFrame()
+                    filtered_data_dict = {}
+                    
+                    for batch in selected_batches:
+                        batch_data = data[(data['Batch name'] == batch) & (data['Step'] == overlay_step)]
+                        if not batch_data.empty:
+                            batch_data = batch_data.reset_index(drop=True)
+                            x_norm = np.linspace(0, 100, len(batch_data))
+                            
+                            # Appliquer le filtre
+                            mask = (x_norm >= filter_start) & (x_norm <= filter_end)
+                            filtered_overlay_data[batch] = batch_data[overlay_param].iloc[mask].reset_index(drop=True)
+                            filtered_data_dict[batch] = batch_data[overlay_param].iloc[mask].reset_index(drop=True)
+                    
+                    # Afficher le graphique filtré
+                    if not filtered_overlay_data.empty:
+                        st.line_chart(filtered_overlay_data)
                         
-                        # Trouver le meilleur alignement par corrélation croisée
-                        if len(curve) > len(ref_curve):
-                            corr = signal.correlate(curve, ref_curve, mode='valid')
-                            lag = np.argmax(corr)
-                            aligned_curve = curve.iloc[lag:lag+len(ref_curve)].reset_index(drop=True)
-                        else:
-                            corr = signal.correlate(ref_curve, curve, mode='valid')
-                            lag = np.argmax(corr)
-                            # Remplir avec NaN si nécessaire
-                            aligned_curve = pd.Series([np.nan] * lag + list(curve) + [np.nan] * (len(ref_curve) - len(curve) - lag))
-                        
-                        aligned_curves[batch] = aligned_curve
-                    
-                    return aligned_curves, ref_curve
-                
-                # Filtrer et organiser les données pour l'alignement
-                curves_to_align = {}
-                for batch in selected_batches:
-                    batch_data = data[(data['Batch name'] == batch) & (data['Step'] == overlay_step)]
-                    if not batch_data.empty:
-                        curves_to_align[batch] = batch_data
-                
-                if len(curves_to_align) > 1:
-                    # Aligner les courbes
-                    aligned_curves, ref_curve = align_curves(
-                        ref_data, 
-                        curves_to_align, 
-                        overlay_param, 
-                        start_idx, 
-                        end_idx
-                    )
-                    
-                    # Afficher les courbes alignées
-                    fig = go.Figure()
-                    
-                    # Référence
-                    fig.add_trace(go.Scatter(
-                        y=ref_curve,
-                        mode='lines',
-                        name=f"{reference_batch} (Référence)",
-                        line=dict(color='black', width=2)
-                    ))
-                    
-                    # Courbes alignées
-                    colors = px.colors.qualitative.Plotly
-                    for i, (batch, curve) in enumerate(aligned_curves.items()):
-                        if batch != reference_batch:
-                            fig.add_trace(go.Scatter(
-                                y=curve,
-                                mode='lines',
-                                name=batch,
-                                line=dict(color=colors[i % len(colors)])
-                            ))
-                    
-                    fig.update_layout(
-                        title=f"Superposition de {overlay_param} - {overlay_step}",
-                        yaxis_title=overlay_param,
-                        xaxis_title="Index aligné",
-                        height=600
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Option pour télécharger les courbes alignées
-                    aligned_df = pd.DataFrame(aligned_curves)
-                    csv = aligned_df.to_csv(index=True)
-                    st.download_button(
-                        label="Télécharger les courbes alignées",
-                        data=csv,
-                        file_name=f"aligned_curves_{overlay_param}_{overlay_step}.csv",
-                        mime='text/csv',
-                    )
-                else:
-                    st.warning("Veuillez sélectionner au moins deux lots pour la superposition.")
+                        # Préparation pour téléchargement
+                        if filtered_data_dict:
+                            # S'assurer que toutes les séries ont la même longueur
+                            max_len = max([len(series) for series in filtered_data_dict.values()])
+                            for batch, series in filtered_data_dict.items():
+                                if len(series) < max_len:
+                                    # Padding avec NaN
+                                    filtered_data_dict[batch] = pd.Series(list(series) + [np.nan] * (max_len - len(series)))
+                            
+                            filtered_df = pd.DataFrame(filtered_data_dict)
+                            
+                            # Option de téléchargement
+                            csv = filtered_df.to_csv(index=True)
+                            st.download_button(
+                                label="Télécharger les données filtrées",
+                                data=csv,
+                                file_name=f"filtered_overlay_{overlay_param}_{overlay_step}.csv",
+                                mime='text/csv',
+                            )
             else:
-                st.warning("Aucune donnée disponible pour le lot de référence et cette étape.")
+                st.warning("Pas de données disponibles pour la superposition.")
         else:
             st.warning("Veuillez sélectionner au moins un lot et une étape pour la superposition.")
     
@@ -351,82 +274,68 @@ if 'data' in locals() and data is not None:
                 compare_params = st.multiselect(
                     "Paramètres à comparer",
                     options=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time']],
-                    default=['Température fond de cuve', 'Température haut de colonne']
+                    default=['Température fond de cuve', 'Température haut de colonne'],
+                    key="compare_params"
                 )
                 
                 if compare_params:
-                    # Créer une figure pour chaque paramètre
+                    # Créer une analyse pour chaque paramètre
                     for param in compare_params:
-                        fig = go.Figure()
+                        # Préparer les données pour l'analyse
+                        ideal_data_reset = ideal_data.reset_index(drop=True)
+                        compare_data_reset = compare_data.reset_index(drop=True)
                         
-                        # Données du lot idéal
-                        fig.add_trace(go.Scatter(
-                            x=ideal_data.index if 'Time' not in ideal_data.columns else ideal_data['Time'],
-                            y=ideal_data[param],
-                            mode='lines',
-                            name=f"{ideal_batch} (Référence)",
-                            line=dict(color='green', width=2)
-                        ))
+                        # Assurer que les deux séries ont la même longueur
+                        min_len = min(len(ideal_data_reset), len(compare_data_reset))
+                        ideal_series = ideal_data_reset[param].iloc[:min_len]
+                        compare_series = compare_data_reset[param].iloc[:min_len]
                         
-                        # Données du lot à comparer
-                        fig.add_trace(go.Scatter(
-                            x=compare_data.index if 'Time' not in compare_data.columns else compare_data['Time'],
-                            y=compare_data[param],
-                            mode='lines',
-                            name=compare_batch,
-                            line=dict(color='red', width=2)
-                        ))
+                        # Calculer la différence absolue
+                        diff = abs(ideal_series.values - compare_series.values)
                         
-                        # Calculer la différence
-                        min_len = min(len(ideal_data), len(compare_data))
-                        diff = abs(ideal_data[param].iloc[:min_len].values - compare_data[param].iloc[:min_len].values)
+                        # Créer un DataFrame pour le graphique
+                        comparison_df = pd.DataFrame({
+                            f"{ideal_batch} (Référence)": ideal_series.values,
+                            f"{compare_batch}": compare_series.values,
+                            "Différence absolue": diff
+                        })
                         
-                        # Ajouter la différence
-                        fig.add_trace(go.Scatter(
-                            x=ideal_data.index[:min_len] if 'Time' not in ideal_data.columns else ideal_data['Time'].iloc[:min_len],
-                            y=diff,
-                            mode='lines',
-                            name='Différence absolue',
-                            line=dict(color='orange', width=1, dash='dash')
-                        ))
+                        # Afficher le graphique de comparaison
+                        st.subheader(f"Comparaison de {param} - {compare_step}")
+                        st.line_chart(comparison_df)
                         
-                        # Seuil de déviation (peut être paramétré)
+                        # Seuil de déviation
                         threshold = st.slider(f"Seuil de déviation pour {param}", 
-                                           0.0, float(diff.max()*1.5), float(diff.max()*0.2),
+                                           0.0, float(max(diff)*1.5), float(max(diff)*0.2),
                                            key=f"threshold_{param}")
                         
-                        # Marquer les zones de déviation
+                        # Identifier les zones de déviation
                         deviation_indices = np.where(diff > threshold)[0]
                         
                         if len(deviation_indices) > 0:
-                            # Grouper les indices consécutifs
+                            # Grouper les indices consécutifs pour trouver les zones
                             ranges = []
-                            start = deviation_indices[0]
-                            for i in range(1, len(deviation_indices)):
-                                if deviation_indices[i] != deviation_indices[i-1] + 1:
-                                    ranges.append((start, deviation_indices[i-1]))
-                                    start = deviation_indices[i]
-                            ranges.append((start, deviation_indices[-1]))
+                            if len(deviation_indices) > 0:
+                                start = deviation_indices[0]
+                                for i in range(1, len(deviation_indices)):
+                                    if deviation_indices[i] != deviation_indices[i-1] + 1:
+                                        ranges.append((start, deviation_indices[i-1]))
+                                        start = deviation_indices[i]
+                                ranges.append((start, deviation_indices[-1]))
                             
-                            # Ajouter des zones surlignées pour les déviations
-                            for start, end in ranges:
-                                fig.add_vrect(
-                                    x0=start, x1=end,
-                                    fillcolor="red", opacity=0.2,
-                                    layer="below", line_width=0
-                                )
-                        
-                        fig.update_layout(
-                            title=f"Comparaison de {param} - {compare_step}",
-                            xaxis_title="Index / Temps",
-                            yaxis_title=param,
-                            height=500
-                        )
-                        
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                        # Résumé des déviations
-                        if len(deviation_indices) > 0:
+                            # Créer un DataFrame pour visualiser les déviations
+                            deviation_df = pd.DataFrame({
+                                f"{ideal_batch} (Référence)": ideal_series.values,
+                                f"{compare_batch}": compare_series.values,
+                                "Différence absolue": diff,
+                                "Seuil": [threshold] * len(diff)
+                            })
+                            
+                            # Afficher le graphique avec le seuil
+                            st.subheader(f"Déviations détectées pour {param}")
+                            st.line_chart(deviation_df)
+                            
+                            # Résumé des déviations
                             st.warning(f"Déviations détectées pour {param}: {len(deviation_indices)} points dépassent le seuil.")
                             
                             # Analyse statistique des déviations
@@ -434,11 +343,22 @@ if 'data' in locals() and data is not None:
                             
                             col1, col2, col3 = st.columns(3)
                             with col1:
-                                st.metric("Déviation maximale", f"{diff.max():.2f}")
+                                st.metric("Déviation maximale", f"{max(diff):.2f}")
                             with col2:
-                                st.metric("Déviation moyenne", f"{diff.mean():.2f}")
+                                st.metric("Déviation moyenne", f"{np.mean(diff):.2f}")
                             with col3:
                                 st.metric("% de points en déviation", f"{len(deviation_indices)/min_len*100:.1f}%")
+                            
+                            # Afficher les points de déviation
+                            deviation_points = pd.DataFrame({
+                                "Index": deviation_indices,
+                                f"{ideal_batch} (Référence)": ideal_series.iloc[deviation_indices].values,
+                                f"{compare_batch}": compare_series.iloc[deviation_indices].values,
+                                "Différence": diff[deviation_indices]
+                            })
+                            
+                            st.subheader("Points de déviation significative")
+                            st.dataframe(deviation_points)
                         else:
                             st.success(f"Aucune déviation significative détectée pour {param}.")
                 else:
@@ -448,155 +368,24 @@ if 'data' in locals() and data is not None:
         else:
             st.info("Veuillez sélectionner un lot de référence, un lot à comparer et une étape.")
     
-    # Section de modélisation prédictive
-    st.header("Modélisation Prédictive")
+    # Section de modélisation simplifiée
+    st.header("Analyse Statistique")
     
-    modeling_tabs = st.tabs(["Prédiction des comportements", "Analyse des facteurs d'influence"])
+    analysis_tabs = st.tabs(["Analyse des tendances", "Corrélations"])
     
-    with modeling_tabs[0]:
-        st.subheader("Prédiction des Températures")
+    with analysis_tabs[1]:
+        st.subheader("Analyse des Corrélations")
         st.markdown("""
-        Cette section utilise les données historiques pour prédire les comportements des températures
-        en fonction des autres paramètres du procédé.
-        """)
-        
-        # Sélectionner la variable à prédire
-        target_var = st.selectbox(
-            "Variable à prédire",
-            options=[col for col in data.columns if 'Température' in col],
-            index=0
-        )
-        
-        # Sélectionner les variables explicatives
-        feature_vars = st.multiselect(
-            "Variables explicatives",
-            options=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time', target_var]],
-            default=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time', target_var]][:3]
-        )
-        
-        if target_var and feature_vars:
-            # Préparation des données
-            model_data = data.dropna(subset=[target_var] + feature_vars)
-            
-            # Encodage des variables catégorielles si nécessaire
-            if 'Step' in feature_vars:
-                model_data = pd.get_dummies(model_data, columns=['Step'], drop_first=True)
-                feature_vars = [f for f in feature_vars if f != 'Step'] + [col for col in model_data.columns if 'Step_' in col]
-            
-            # Séparer les données
-            X = model_data[feature_vars]
-            y = model_data[target_var]
-            
-            if st.button("Entraîner le modèle XGBoost"):
-                # Diviser en ensembles d'entraînement et de test
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-                
-                with st.spinner("Entraînement du modèle en cours..."):
-                    # Entraîner le modèle XGBoost
-                    model = xgb.XGBRegressor(
-                        objective='reg:squarederror',
-                        n_estimators=100,
-                        learning_rate=0.1,
-                        max_depth=5,
-                        random_state=42
-                    )
-                    
-                    model.fit(X_train, y_train)
-                    
-                    # Prédictions
-                    y_pred = model.predict(X_test)
-                    
-                    # Évaluation du modèle
-                    mse = mean_squared_error(y_test, y_pred)
-                    r2 = r2_score(y_test, y_pred)
-                    
-                    # Afficher les résultats
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Erreur quadratique moyenne (MSE)", f"{mse:.4f}")
-                    with col2:
-                        st.metric("Coefficient de détermination (R²)", f"{r2:.4f}")
-                    
-                    # Importance des variables
-                    importance = model.feature_importances_
-                    feature_importance = pd.DataFrame({
-                        'Feature': feature_vars,
-                        'Importance': importance
-                    }).sort_values(by='Importance', ascending=False)
-                    
-                    st.subheader("Importance des Variables")
-                    fig = px.bar(
-                        feature_importance, 
-                        x='Importance', 
-                        y='Feature',
-                        orientation='h',
-                        title="Importance des variables dans la prédiction"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Visualisation des prédictions vs réalité
-                    fig = px.scatter(
-                        x=y_test, 
-                        y=y_pred,
-                        labels={'x': 'Valeurs réelles', 'y': 'Prédictions'},
-                        title="Prédictions vs Valeurs réelles"
-                    )
-                    
-                    # Ligne de référence parfaite
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[y_test.min(), y_test.max()], 
-                            y=[y_test.min(), y_test.max()],
-                            mode='lines',
-                            name='Prédiction parfaite',
-                            line=dict(color='red', dash='dash')
-                        )
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Sauvegarde du modèle
-                    st.subheader("Sauvegarde du modèle")
-                    st.markdown("""
-                    Vous pouvez sauvegarder ce modèle pour une utilisation future.
-                    """)
-                    
-                    if st.button("Sauvegarder le modèle"):
-                        # Création d'un dictionnaire contenant le modèle et les métadonnées
-                        model_info = {
-                            'model': model,
-                            'target_var': target_var,
-                            'feature_vars': feature_vars,
-                            'metrics': {
-                                'mse': mse,
-                                'r2': r2
-                            },
-                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        }
-                        
-                        # Exemple de sauvegarde avec pickle (à adapter selon le contexte)
-                        import pickle
-                        model_pickle = pickle.dumps(model_info)
-                        
-                        st.download_button(
-                            label="Télécharger le modèle",
-                            data=model_pickle,
-                            file_name=f"model_{target_var.replace(' ', '_')}.pkl",
-                            mime="application/octet-stream"
-                        )
-    
-    with modeling_tabs[1]:
-        st.subheader("Analyse des Facteurs d'Influence")
-        st.markdown("""
-        Cette section permet d'analyser l'influence des différents paramètres sur les températures
-        et d'identifier les facteurs qui contribuent le plus aux déviations.
+        Cette section permet d'analyser les corrélations entre les différents paramètres
+        et d'identifier les relations importantes.
         """)
         
         # Sélection des paramètres pour l'analyse de corrélation
         corr_params = st.multiselect(
             "Paramètres pour l'analyse de corrélation",
             options=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time']],
-            default=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time']]
+            default=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time']],
+            key="corr_params"
         )
         
         if corr_params:
@@ -606,275 +395,633 @@ if 'data' in locals() and data is not None:
             # Calculer la matrice de corrélation
             corr_matrix = corr_data.corr()
             
-            # Afficher la heatmap
-            fig = px.imshow(
-                corr_matrix,
-                text_auto=True,
-                color_continuous_scale='RdBu_r',
-                title="Matrice de Corrélation entre les Paramètres"
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
+            # Afficher la matrice de corrélation comme un tableau
+            st.subheader("Matrice de Corrélation entre les Paramètres")
+            st.dataframe(corr_matrix)
             
             # Analyse des relations entre variables
             st.subheader("Relations entre Variables")
             
             col1, col2 = st.columns(2)
             with col1:
-                x_var = st.selectbox("Variable X", options=corr_params, index=0)
+                x_var = st.selectbox("Variable X", options=corr_params, index=0, key="x_var")
             with col2:
-                y_var = st.selectbox("Variable Y", options=[p for p in corr_params if p != x_var], index=0)
+                y_var = st.selectbox("Variable Y", options=[p for p in corr_params if p != x_var], index=0, key="y_var")
             
-            # Créer un scatter plot pour visualiser la relation
+            # Préparer les données pour le scatter plot
+            scatter_data = data[[x_var, y_var]].dropna()
+            
+            # Afficher le scatter plot
+            st.subheader(f"Relation entre {x_var} et {y_var}")
+            
+            # Créer un dataframe temporaire pour le scatter plot
+            scatter_df = pd.DataFrame({
+                x_var: scatter_data[x_var],
+                y_var: scatter_data[y_var]
+            })
+            
+            # Utiliser st.scatter_chart qui est disponible dans les versions récentes de Streamlit
+            # Si ce n'est pas disponible, fallback vers une alternative
+            try:
+                st.scatter_chart(scatter_df, x=x_var, y=y_var)
+            except:
+                st.write("Nuage de points:")
+                st.dataframe(scatter_df.head(100))
+                st.info("Aperçu limité aux 100 premiers points. Pour une visualisation complète, téléchargez les données.")
+            
+            # Option d'analyse par groupe simplifiée
             color_var = st.selectbox(
-                "Colorer par",
-                options=["Aucune coloration"] + ["Batch name", "Step"],
-                index=0
+                "Grouper par",
+                options=["Aucun groupement"] + ["Batch name", "Step"],
+                index=0,
+                key="color_var"
             )
             
-            if color_var == "Aucune coloration":
-                fig = px.scatter(
-                    data,
-                    x=x_var,
-                    y=y_var,
-                    opacity=0.6,
-                    title=f"Relation entre {x_var} et {y_var}"
-                )
-            else:
-                fig = px.scatter(
-                    data,
-                    x=x_var,
-                    y=y_var,
-                    color=color_var,
-                    opacity=0.6,
-                    title=f"Relation entre {x_var} et {y_var}, coloré par {color_var}"
-                )
-            
-            # Ajouter une ligne de tendance
-            if st.checkbox("Afficher la ligne de tendance", value=True):
-                fig.update_layout(showlegend=True)
-                fig = px.scatter(
-                    data,
-                    x=x_var,
-                    y=y_var,
-                    color=color_var if color_var != "Aucune coloration" else None,
-                    opacity=0.6,
-                    trendline="ols",
-                    title=f"Relation entre {x_var} et {y_var}" + (f", coloré par {color_var}" if color_var != "Aucune coloration" else "")
-                )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Analyse de variance par groupe (si applicable)
-            if color_var != "Aucune coloration":
-                st.subheader(f"Analyse de {y_var} par groupe de {color_var}")
+            if color_var != "Aucun groupement":
+                # Calculer des statistiques par groupe
+                grouped_stats = data.groupby(color_var)[[x_var, y_var]].agg(['mean', 'std']).reset_index()
                 
-                # Création d'un box plot
-                fig = px.box(
-                    data,
-                    x=color_var,
-                    y=y_var,
-                    title=f"Distribution de {y_var} par {color_var}"
-                )
+                st.subheader(f"Statistiques par {color_var}")
+                st.dataframe(grouped_stats)
                 
-                st.plotly_chart(fig, use_container_width=True)
+                # Afficher les statistiques sous forme de tableau
+                summary_stats = data.groupby(color_var)[y_var].agg(['count', 'mean', 'std', 'min', 'max']).reset_index()
                 
-                # Test statistique (si applicable)
-                if color_var == "Step" and data[color_var].nunique() > 1:
-                    from scipy import stats
-                    
-                    # ANOVA pour comparer les moyennes entre les groupes
-                    groups = [data[data[color_var] == group][y_var].dropna() for group in data[color_var].unique()]
-                    f_stat, p_value = stats.f_oneway(*groups)
-                    
-                    st.write(f"Test ANOVA pour {y_var} entre les étapes:")
-                    st.write(f"Statistique F: {f_stat:.4f}, p-value: {p_value:.4f}")
-                    
-                    if p_value < 0.05:
-                        st.success(f"Il existe une différence significative de {y_var} entre les différentes étapes (p < 0.05).")
-                    else:
-                        st.info(f"Il n'y a pas de différence significative de {y_var} entre les différentes étapes (p > 0.05).")
-
-    # Section d'aide à la décision
-    st.header("Aide à la Décision")
+                st.subheader(f"Distribution de {y_var} par {color_var}")
+                st.dataframe(summary_stats)
+        else:
+            st.warning("Veuillez sélectionner au moins un paramètre pour l'analyse.")
     
-    decision_tabs = st.tabs(["Identification des lots déviants", "Recommandations"])
-    
-    with decision_tabs[0]:
-        st.subheader("Détection de Lots Déviants")
+    with analysis_tabs[0]:
+        st.subheader("Analyse des Tendances")
         st.markdown("""
-        Cette section permet d'identifier automatiquement les lots qui présentent des déviations
-        importantes par rapport à un lot de référence ou aux spécifications.
+        Cette section permet d'analyser les tendances des paramètres au fil du temps
+        et d'identifier les comportements anormaux.
         """)
         
-        # Sélection du paramètre critique
-        critical_param = st.selectbox(
-            "Paramètre critique à surveiller",
+        # Sélection du paramètre à analyser
+        trend_param = st.selectbox(
+            "Paramètre à analyser",
             options=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time']],
-            index=data.columns.get_loc("Température fond de cuve") - 2 if "Température fond de cuve" in data.columns else 0,
-            key="critical_param"
+            index=0,
+            key="trend_param"
         )
         
-        # Sélection de l'étape critique
-        critical_step = st.selectbox(
-            "Étape critique à surveiller",
-            options=sorted(data['Step'].unique()),
-            key="critical_step"
+        # Sélection de l'étape
+        trend_step = st.selectbox(
+            "Étape à analyser",
+            options=["Toutes les étapes"] + sorted(data['Step'].unique()),
+            key="trend_step"
         )
         
-        # Définir le seuil de déviation
-        deviation_threshold = st.slider(
-            "Seuil de déviation (%)",
-            min_value=1.0,
-            max_value=50.0,
-            value=10.0,
-            step=0.5,
-            key="deviation_threshold"
-        )
-        
-        # Calculer les statistiques pour chaque lot à l'étape critique
-        if st.button("Analyser les déviations"):
-            # Lot de référence (peut être le lot médian)
-            reference_values = []
+        if trend_param:
+            # Filtrer les données
+            if trend_step == "Toutes les étapes":
+                trend_data = data
+            else:
+                trend_data = data[data['Step'] == trend_step]
             
-            for batch in data['Batch name'].unique():
-                batch_data = data[(data['Batch name'] == batch) & (data['Step'] == critical_step)]
+            # Calculer les statistiques par lot
+            batch_stats = trend_data.groupby('Batch name')[trend_param].agg(['mean', 'std', 'min', 'max']).reset_index()
+            
+            # Afficher les statistiques
+            st.subheader("Statistiques par Lot")
+            st.dataframe(batch_stats)
+            
+            # Visualiser la distribution des moyennes en utilisant st.bar_chart
+            stats_for_chart = batch_stats.set_index('Batch name')[['mean']]
+            st.subheader(f"Moyenne de {trend_param} par lot" + (f" - {trend_step}" if trend_step != "Toutes les étapes" else ""))
+            st.bar_chart(stats_for_chart)
+            
+            # Calculer et afficher la tendance globale
+            if 'Time' in trend_data.columns:
+                # Réorganiser les données pour la tendance temporelle
+                time_trend = trend_data.sort_values('Time')
                 
-                if not batch_data.empty and critical_param in batch_data.columns:
-                    # Calcul des statistiques
-                    mean_value = batch_data[critical_param].mean()
-                    max_value = batch_data[critical_param].max()
-                    min_value = batch_data[critical_param].min()
-                    std_value = batch_data[critical_param].std()
+                # Préparer les données pour le graphique
+                trend_chart_data = pd.DataFrame({
+                    trend_param: time_trend[trend_param].values
+                }, index=time_trend['Time'])
+                
+                st.subheader(f"Tendance de {trend_param} au fil du temps")
+                st.line_chart(trend_chart_data)
+                
+                # Ajouter des statistiques de tendance
+                st.subheader("Analyse statistique de la tendance")
+                
+                # Calculer moyenne mobile pour montrer la tendance
+                window_size = st.slider("Taille de la fenêtre pour la moyenne mobile", 
+                                      5, 100, 20, key="window_size")
+                
+                if len(time_trend) >= window_size:
+                    time_trend['Rolling Mean'] = time_trend[trend_param].rolling(window=window_size).mean()
                     
-                    reference_values.append({
-                        'Batch': batch,
-                        'Mean': mean_value,
-                        'Max': max_value,
-                        'Min': min_value,
-                        'Std': std_value
-                    })
+                    # Préparer les données pour le graphique
+                    rolling_chart_data = pd.DataFrame({
+                        trend_param: time_trend[trend_param].values,
+                        f"Moyenne mobile ({window_size} points)": time_trend['Rolling Mean'].values
+                    }, index=time_trend['Time'])
+                    
+                    st.line_chart(rolling_chart_data)
             
-            if reference_values:
-                # Convertir en DataFrame
-                ref_df = pd.DataFrame(reference_values)
+            # Détection simple d'anomalies
+            st.subheader("Détection d'Anomalies")
+            
+            # Méthode simple: Identifier les valeurs au-delà d'un certain nombre d'écarts-types
+            std_threshold = st.slider(
+                "Nombre d'écarts-types pour détecter les anomalies", 
+                1.0, 5.0, 3.0, 0.1,
+                key="std_threshold"
+            )
+            
+            # Calculer la moyenne et l'écart-type
+            if trend_step == "Toutes les étapes":
+                # Calculer par étape
+                step_stats = trend_data.groupby('Step')[trend_param].agg(['mean', 'std']).reset_index()
                 
-                # Calculer la valeur médiane comme référence
-                median_mean = ref_df['Mean'].median()
+                # Créer un conteneur pour chaque étape
+                for step in trend_data['Step'].unique():
+                    step_data = trend_data[trend_data['Step'] == step]
+                    stats = step_stats[step_stats['Step'] == step].iloc[0]
+                    
+                    mean_val = stats['mean']
+                    std_val = stats['std']
+                    
+                    upper_limit = mean_val + std_threshold * std_val
+                    lower_limit = mean_val - std_threshold * std_val
+                    
+                    # Identifier les anomalies
+                    anomalies = step_data[
+                        (step_data[trend_param] > upper_limit) | 
+                        (step_data[trend_param] < lower_limit)
+                    ]
+                    
+                    # Afficher les résultats pour cette étape
+                    st.write(f"### Étape: {step}")
+                    st.write(f"- Moyenne: {mean_val:.2f}")
+                    st.write(f"- Écart-type: {std_val:.2f}")
+                    st.write(f"- Limite supérieure (+{std_threshold} σ): {upper_limit:.2f}")
+                    st.write(f"- Limite inférieure (-{std_threshold} σ): {lower_limit:.2f}")
+                    
+                    if not anomalies.empty:
+                        st.warning(f"{len(anomalies)} anomalies détectées sur {len(step_data)} points ({len(anomalies)/len(step_data)*100:.1f}%).")
+                        
+                        # Afficher les anomalies
+                        st.dataframe(anomalies[['Batch name', 'Step', trend_param, 'Time']])
+                    else:
+                        st.success(f"Aucune anomalie détectée pour l'étape {step}.")
+                    
+                    st.markdown("---")
+            else:
+                # Analyser une seule étape
+                mean_val = trend_data[trend_param].mean()
+                std_val = trend_data[trend_param].std()
                 
-                # Calculer les déviations
-                ref_df['Deviation (%)'] = ((ref_df['Mean'] - median_mean) / median_mean * 100).abs()
+                upper_limit = mean_val + std_threshold * std_val
+                lower_limit = mean_val - std_threshold * std_val
                 
-                # Trier par déviation
-                ref_df = ref_df.sort_values(by='Deviation (%)', ascending=False)
+                # Identifier les anomalies
+                anomalies = trend_data[
+                    (trend_data[trend_param] > upper_limit) | 
+                    (trend_data[trend_param] < lower_limit)
+                ]
                 
-                # Identifier les lots déviants
-                deviation_pct = deviation_threshold / 100
-                deviant_batches = ref_df[ref_df['Deviation (%)'] > deviation_threshold]
+                # Afficher les statistiques
+                st.write(f"### Statistiques pour {trend_step}")
+                st.write(f"- Moyenne: {mean_val:.2f}")
+                st.write(f"- Écart-type: {std_val:.2f}")
+                st.write(f"- Limite supérieure (+{std_threshold} σ): {upper_limit:.2f}")
+                st.write(f"- Limite inférieure (-{std_threshold} σ): {lower_limit:.2f}")
                 
                 # Afficher les résultats
-                st.subheader("Résultats de l'Analyse")
-                
-                if not deviant_batches.empty:
-                    st.warning(f"{len(deviant_batches)} lots présentent des déviations supérieures à {deviation_threshold}% pour {critical_param}.")
+                if not anomalies.empty:
+                    st.warning(f"{len(anomalies)} anomalies détectées sur {len(trend_data)} points ({len(anomalies)/len(trend_data)*100:.1f}%).")
                     
-                    # Afficher le tableau des lots déviants
-                    st.dataframe(deviant_batches.reset_index(drop=True))
+                    # Afficher les anomalies
+                    st.dataframe(anomalies[['Batch name', trend_param, 'Time']])
                     
-                    # Visualisation des déviations
-                    fig = px.bar(
-                        deviant_batches,
-                        x='Batch',
-                        y='Deviation (%)',
-                        color='Deviation (%)',
-                        color_continuous_scale=['green', 'yellow', 'red'],
-                        title=f"Lots avec déviations > {deviation_threshold}% pour {critical_param} à l'étape {critical_step}"
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Option pour télécharger les résultats
-                    csv = deviant_batches.to_csv(index=False)
+                    # Option pour télécharger
+                    csv = anomalies.to_csv(index=False)
                     st.download_button(
-                        label="Télécharger la liste des lots déviants",
+                        label="Télécharger la liste des anomalies",
                         data=csv,
-                        file_name=f"lots_deviants_{critical_param}_{critical_step}.csv",
+                        file_name=f"anomalies_{trend_param}_{trend_step}.csv",
                         mime='text/csv',
                     )
                 else:
-                    st.success(f"Aucun lot ne présente de déviation supérieure à {deviation_threshold}% pour {critical_param}.")
-                
-                # Afficher la distribution des valeurs moyennes
-                fig = px.histogram(
-                    ref_df,
-                    x='Mean',
-                    title=f"Distribution des valeurs moyennes de {critical_param} à l'étape {critical_step}",
-                    nbins=20
-                )
-                
-                # Ajouter une ligne verticale pour la valeur médiane
-                fig.add_vline(
-                    x=median_mean,
-                    line_dash="dash",
-                    line_color="red",
-                    annotation_text=f"Médiane: {median_mean:.2f}",
-                    annotation_position="top right"
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Données insuffisantes pour l'analyse des déviations.")
+                    st.success(f"Aucune anomalie détectée pour {trend_param} - {trend_step} avec un seuil de {std_threshold} écarts-types.")
+        else:
+            st.warning("Veuillez sélectionner un paramètre pour l'analyse.")
     
-    with decision_tabs[1]:
-        st.subheader("Recommandations pour l'Amélioration des Procédés")
-        st.markdown("""
-        Sur la base de l'analyse des données, voici quelques recommandations pour améliorer 
-        les procédés de production et réduire les déviations.
-        """)
-        
-        # Générer des recommandations basées sur les données
-        recommendations = [
-            "**Surveillez étroitement les températures** pendant les phases critiques du processus, en particulier pendant la phase de réaction.",
-            "**Standardisez les procédures de contrôle** pour maintenir des conditions constantes entre les lots.",
-            "**Établissez des limites d'alerte** basées sur les déviations statistiques observées dans les lots historiques.",
-            "**Formez les opérateurs** à reconnaître rapidement les signes de déviation et à prendre des mesures correctives.",
-            "**Documentez systématiquement** toutes les interventions manuelles pendant le processus de production."
-        ]
-        
-        for i, rec in enumerate(recommendations):
-            st.markdown(f"{i+1}. {rec}")
-        
-        # Ajouter une section pour les notes personnalisées
-        st.subheader("Notes et Observations")
-        user_notes = st.text_area(
-            "Ajoutez vos propres observations et recommandations",
-            height=150
+    # Nouvelle section pour la prédiction des comportements
+    st.header("Prédiction des Comportements")
+    st.markdown("""
+    Cette section utilise différents modèles de régression pour prédire le comportement 
+    futur des paramètres à partir des données historiques.
+    """)
+    
+    # Sélection du paramètre à prédire
+    pred_param = st.selectbox(
+        "Paramètre à prédire",
+        options=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time']],
+        index=0,
+        key="pred_param"
+    )
+    
+    # Sélection du lot et de l'étape pour la prédiction
+    col1, col2 = st.columns(2)
+    with col1:
+        pred_batch = st.selectbox(
+            "Lot à analyser",
+            options=sorted(data['Batch name'].unique()),
+            key="pred_batch"
         )
-        
-        if st.button("Sauvegarder les notes"):
-            st.success("Notes sauvegardées avec succès!")
+    with col2:
+        pred_step = st.selectbox(
+            "Étape à analyser",
+            options=sorted(data['Step'].unique()),
+            key="pred_step"
+        )
+    
+    # Filtrer les données pour le lot et l'étape sélectionnés
+    pred_data = data[(data['Batch name'] == pred_batch) & (data['Step'] == pred_step)]
+    
+    if not pred_data.empty:
+        # Création des onglets pour différents types de prédiction
+        pred_tabs = st.tabs(["Prédiction Temporelle", "Prédiction Basée sur les Corrélations"])
+        with pred_tabs[0]:
+            st.subheader("Prédiction Temporelle")
+            st.markdown("""
+            Ce modèle utilise la progression temporelle ou l'index pour prédire l'évolution future du paramètre sélectionné.
+            """)
             
-            # Création d'un rapport combinant l'analyse et les notes
-            if user_notes:
-                report = f"""
-                # Rapport d'Analyse des Procédés - {datetime.now().strftime("%Y-%m-%d")}
-                
-                ## Recommandations Système
-                
-                {chr(10).join([f"- {rec}" for rec in recommendations])}
-                
-                ## Notes et Observations
-                
-                {user_notes}
-                """
-                
-                # Option pour télécharger le rapport
-                st.download_button(
-                    label="Télécharger le rapport",
-                    data=report,
-                    file_name=f"rapport_analyse_{datetime.now().strftime('%Y%m%d')}.md",
-                    mime='text/markdown',
+            # Réinitialiser l'index pour la progression linéaire
+            pred_data_reset = pred_data.reset_index(drop=True)
+            x_values = np.array(range(len(pred_data_reset)))
+            y_values = pred_data_reset[pred_param].values
+            
+            # Sélection du modèle et de ses paramètres
+            model_type = st.selectbox(
+                "Type de modèle de prédiction",
+                options=["Régression Linéaire", "Régression Polynomiale", "XGBoost"],
+                key="pred_model_type"
+            )
+            
+            if model_type == "Régression Polynomiale":
+                degree = st.slider(
+                    "Degré du polynôme",
+                    min_value=1,
+                    max_value=5,
+                    value=2,
+                    key="pred_poly_degree"
                 )
+            else:
+                degree = 1
+                
+            # Paramètres spécifiques à XGBoost
+            if model_type == "XGBoost":
+                col1, col2 = st.columns(2)
+                with col1:
+                    n_estimators = st.slider("Nombre d'arbres", 10, 200, 100, 10, key="xgb_n_estimators")
+                with col2:
+                    max_depth = st.slider("Profondeur maximale des arbres", 1, 10, 3, 1, key="xgb_max_depth")
+                learning_rate = st.slider("Taux d'apprentissage", 0.01, 0.3, 0.1, 0.01, key="xgb_learning_rate")
+            
+            # Pourcentage de données à utiliser pour l'entraînement
+            train_pct = st.slider(
+                "Pourcentage de données pour l'entraînement",
+                min_value=50,
+                max_value=90,
+                value=70,
+                step=5,
+                key="train_pct"
+            )
+            
+            # Calculer le point de séparation
+            split_idx = int(len(x_values) * train_pct / 100)
+            x_train, x_test = x_values[:split_idx], x_values[split_idx:]
+            y_train, y_test = y_values[:split_idx], y_values[split_idx:]
+            
+            # Ajuster le modèle selon le type sélectionné
+            if model_type == "XGBoost":
+                # Reformater les données pour XGBoost
+                X_train_reshaped = x_train.reshape(-1, 1)
+                X_test_reshaped = x_test.reshape(-1, 1)
+                
+                # Créer et entraîner le modèle XGBoost
+                model_xgb = xgb.XGBRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    learning_rate=learning_rate,
+                    objective='reg:squarederror',
+                    random_state=42
+                )
+                
+                model_xgb.fit(X_train_reshaped, y_train)
+                
+                # Prédictions
+                y_pred_train = model_xgb.predict(X_train_reshaped)
+                y_pred_test = model_xgb.predict(X_test_reshaped)
+                
+                # Définir une fonction pour les prédictions futures
+                def predict_future(x_future):
+                    return model_xgb.predict(x_future.reshape(-1, 1))
+                
+                # Équation du modèle (simplifiée pour XGBoost)
+                equation = f"XGBoost (n_estimators={n_estimators}, max_depth={max_depth}, learning_rate={learning_rate})"
+            else:
+                # Modèle polynomial ou linéaire (code existant)
+                model_coeffs = np.polyfit(x_train, y_train, degree)
+                model = np.poly1d(model_coeffs)
+                
+                # Prédictions
+                y_pred_train = model(x_train)
+                y_pred_test = model(x_test)
+                
+                # Définir une fonction pour les prédictions futures
+                def predict_future(x_future):
+                    return model(x_future)
+                
+                # Équation du modèle
+                if degree == 1:
+                    equation = f"y = {model_coeffs[0]:.4f}x + {model_coeffs[1]:.4f}"
+                else:
+                    equation = f"Polynôme de degré {degree}: y = "
+                    for i, coef in enumerate(model_coeffs):
+                        power = degree - i
+                        if power == 0:
+                            equation += f"{coef:.4f}"
+                        elif power == 1:
+                            equation += f"{coef:.4f}x + "
+                        else:
+                            equation += f"{coef:.4f}x^{power} + "
+            
+            # Calculer l'erreur (RMSE et R²)
+            if len(y_test) > 0:
+                rmse = np.sqrt(np.mean((y_test - y_pred_test) ** 2))
+                
+                # Calculer R² manuellement
+                y_test_mean = np.mean(y_test)
+                ss_total = np.sum((y_test - y_test_mean) ** 2)
+                ss_residual = np.sum((y_test - y_pred_test) ** 2)
+                r2 = 1 - (ss_residual / ss_total) if ss_total != 0 else 0
+                
+                # Afficher les métriques
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Erreur quadratique moyenne (RMSE)", f"{rmse:.4f}")
+                with col2:
+                    st.metric("Coefficient de détermination (R²)", f"{r2:.4f}")
+            
+            # Extrapolation pour prédire l'avenir
+            future_points = st.slider(
+                "Nombre de points à prédire dans le futur",
+                min_value=0,
+                max_value=int(len(x_values) * 0.5),
+                value=int(len(x_values) * 0.2),
+                key="future_points"
+            )
+            
+            if future_points > 0:
+                # Générer les points futurs
+                x_future = np.array(range(len(x_values), len(x_values) + future_points))
+                y_future = predict_future(x_future)
+                
+                # Préparer les données pour la visualisation
+                train_df = pd.DataFrame({
+                    'Index': x_train,
+                    'Valeur réelle': y_train,
+                    'Prédiction': y_pred_train
+                })
+                
+                test_df = pd.DataFrame({
+                    'Index': x_test,
+                    'Valeur réelle': y_test,
+                    'Prédiction': y_pred_test
+                })
+                
+                future_df = pd.DataFrame({
+                    'Index': x_future,
+                    'Prédiction': y_future
+                })
+                
+                # Afficher les résultats sous forme de tableau
+                st.subheader("Données d'entraînement et prédictions")
+                
+                # Afficher l'équation du modèle
+                st.write(f"**Équation du modèle:** {equation}")
+                
+                # Combiner les données pour le graphique
+                viz_data = pd.DataFrame()
+                viz_data['Index'] = list(x_train) + list(x_test) + list(x_future)
+                
+                # Ajouter les valeurs réelles (avec NaN pour les points futurs)
+                real_values = list(y_train) + list(y_test) + [np.nan] * len(y_future)
+                viz_data['Valeur réelle'] = real_values
+                
+                # Ajouter les valeurs prédites
+                pred_values = list(y_pred_train) + list(y_pred_test) + list(y_future)
+                viz_data['Prédiction'] = pred_values
+                
+                # Afficher le graphique des prédictions vs réalité
+                st.line_chart(viz_data.set_index('Index'))
+                
+                # Afficher les prédictions futures
+                st.subheader("Valeurs Prédites pour le Futur")
+                st.dataframe(future_df)
+                
+                # Option de téléchargement
+                csv = future_df.to_csv(index=False)
+                st.download_button(
+                    label="Télécharger les prédictions",
+                    data=csv,
+                    file_name=f"predictions_{pred_param}_{pred_batch}_{pred_step}.csv",
+                    mime='text/csv',
+                )
+        
+        with pred_tabs[1]:
+            st.subheader("Prédiction Basée sur les Corrélations")
+            st.markdown("""
+            Ce modèle utilise les corrélations entre différents paramètres pour prédire le paramètre cible.
+            """)
+            
+            # Sélection des variables explicatives
+            feature_vars = st.multiselect(
+                "Variables explicatives",
+                options=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time', pred_param]],
+                default=[col for col in data.columns if col not in ['Batch name', 'Step', 'Time', pred_param]][:2],
+                key="corr_feature_vars"
+            )
+            
+            if feature_vars and len(feature_vars) > 0:
+                # Préparation des données
+                X = pred_data_reset[feature_vars].values
+                y = pred_data_reset[pred_param].values
+                
+                # Vérifier s'il y a des valeurs manquantes
+                valid_mask = ~np.isnan(X).any(axis=1) & ~np.isnan(y)
+                X_valid = X[valid_mask]
+                y_valid = y[valid_mask]
+                
+                if len(X_valid) > 0:
+                    # Calculer le point de séparation
+                    split_idx = int(len(X_valid) * train_pct / 100)
+                    X_train, X_test = X_valid[:split_idx], X_valid[split_idx:]
+                    y_train, y_test = y_valid[:split_idx], y_valid[split_idx:]
+                    
+                    # Vérification pour éviter les erreurs
+                    if X_train.shape[0] > 0 and X_test.shape[0] > 0:
+                        # Ajuster un modèle de régression linéaire multiple
+                        # Ajouter une constante (terme d'interception)
+                        X_train_with_const = np.column_stack((np.ones(X_train.shape[0]), X_train))
+                        
+                        # Résoudre l'équation linéaire
+                        try:
+                            # Utiliser np.linalg.lstsq qui est plus stable que np.linalg.solve
+                            coeffs, residuals, rank, s = np.linalg.lstsq(X_train_with_const, y_train, rcond=None)
+                            
+                            # Faire des prédictions
+                            X_test_with_const = np.column_stack((np.ones(X_test.shape[0]), X_test))
+                            y_pred = X_test_with_const @ coeffs
+                            
+                            # Calculer l'erreur (RMSE et R²)
+                            rmse = np.sqrt(np.mean((y_test - y_pred) ** 2))
+                            
+                            # Calculer R² manuellement
+                            y_test_mean = np.mean(y_test)
+                            ss_total = np.sum((y_test - y_test_mean) ** 2)
+                            ss_residual = np.sum((y_test - y_pred) ** 2)
+                            r2 = 1 - (ss_residual / ss_total) if ss_total != 0 else 0
+                            
+                            # Afficher les métriques
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("Erreur quadratique moyenne (RMSE)", f"{rmse:.4f}")
+                            with col2:
+                                st.metric("Coefficient de détermination (R²)", f"{r2:.4f}")
+                            
+                            # Afficher l'équation du modèle
+                            equation = f"{pred_param} = {coeffs[0]:.4f}"
+                            for i, feature in enumerate(feature_vars):
+                                equation += f" + {coeffs[i+1]:.4f} × {feature}"
+                            
+                            st.markdown(f"**Équation du modèle:**")
+                            st.markdown(f"`{equation}`")
+                            
+                            # Créer un tableau pour comparer les prédictions et les valeurs réelles
+                            prediction_df = pd.DataFrame({
+                                'Valeur réelle': y_test,
+                                'Prédiction': y_pred,
+                                'Différence': y_test - y_pred
+                            })
+                            
+                            st.subheader("Comparaison des prédictions et valeurs réelles")
+                            st.dataframe(prediction_df)
+                            
+                            # Afficher l'importance des variables
+                            importance = np.abs(coeffs[1:])
+                            importance_norm = importance / np.sum(importance)
+                            importance_df = pd.DataFrame({
+                                'Variable': feature_vars,
+                                'Coefficient': coeffs[1:],
+                                'Importance': importance_norm
+                            }).sort_values(by='Importance', ascending=False)
+                            
+                            st.subheader("Importance des Variables")
+                            st.dataframe(importance_df)
+                            
+                            # Version graphique simple de l'importance des variables
+                            st.bar_chart(importance_df.set_index('Variable')['Importance'])
+                            
+                            # Permettre à l'utilisateur de faire des prédictions pour de nouvelles valeurs
+                            st.subheader("Faire une prédiction avec de nouvelles valeurs")
+                            
+                            # Créer des sliders pour chaque variable
+                            new_values = {}
+                            for feature in feature_vars:
+                                min_val = float(pred_data_reset[feature].min())
+                                max_val = float(pred_data_reset[feature].max())
+                                default_val = float(pred_data_reset[feature].mean())
+                                
+                                new_values[feature] = st.slider(
+                                    f"Valeur pour {feature}",
+                                    min_value=min_val,
+                                    max_value=max_val,
+                                    value=default_val,
+                                    key=f"slider_{feature}"
+                                )
+                            
+                            # Calculer la prédiction pour les nouvelles valeurs
+                            new_X = np.array([new_values[feature] for feature in feature_vars])
+                            new_X_with_const = np.append(1, new_X)
+                            new_prediction = new_X_with_const @ coeffs
+                            
+                            st.success(f"**Prédiction pour {pred_param}:** {new_prediction:.4f}")
+                            
+                        except Exception as e:
+                            st.error(f"Erreur lors de l'ajustement du modèle : {e}")
+                    else:
+                        st.warning("Pas assez de données pour diviser en ensembles d'entraînement et de test.")
+                else:
+                    st.warning("Les données contiennent trop de valeurs manquantes pour ajuster un modèle.")
+            else:
+                st.warning("Veuillez sélectionner au moins une variable explicative.")
+    else:
+        st.warning("Pas de données disponibles pour le lot et l'étape sélectionnés.")
+    
+    # Section d'aide à la décision
+    st.header("Aide à la Décision")
+    
+    # Recommandations basées sur l'analyse
+    st.subheader("Recommandations pour l'Amélioration des Procédés")
+    st.markdown("""
+    Sur la base de l'analyse des données, voici quelques recommandations pour améliorer 
+    les procédés de production et réduire les déviations.
+    """)
+    
+    # Générer des recommandations basées sur les données
+    recommendations = [
+        "**Surveillez étroitement les températures** pendant les phases critiques du processus, en particulier pendant la phase de réaction.",
+        "**Standardisez les procédures de contrôle** pour maintenir des conditions constantes entre les lots.",
+        "**Établissez des limites d'alerte** basées sur les déviations statistiques observées dans les lots historiques.",
+        "**Formez les opérateurs** à reconnaître rapidement les signes de déviation et à prendre des mesures correctives.",
+        "**Documentez systématiquement** toutes les interventions manuelles pendant le processus de production."
+    ]
+    
+    for i, rec in enumerate(recommendations):
+        st.markdown(f"{i+1}. {rec}")
+    
+    # Ajouter une section pour les notes personnalisées
+    st.subheader("Notes et Observations")
+    user_notes = st.text_area(
+        "Ajoutez vos propres observations et recommandations",
+        height=150
+    )
+    
+    if st.button("Sauvegarder les notes"):
+        st.success("Notes sauvegardées avec succès!")
+        
+        # Création d'un rapport combinant l'analyse et les notes
+        if user_notes:
+            report = f"""
+            # Rapport d'Analyse des Procédés - {datetime.now().strftime("%Y-%m-%d")}
+            
+            ## Recommandations Système
+            
+            {chr(10).join([f"- {rec}" for rec in recommendations])}
+            
+            ## Notes et Observations
+            
+            {user_notes}
+            """
+            
+            # Option pour télécharger le rapport
+            st.download_button(
+                label="Télécharger le rapport",
+                data=report,
+                file_name=f"rapport_analyse_{datetime.now().strftime('%Y%m%d')}.md",
+                mime='text/markdown',
+            )
 
 # Pied de page
 st.markdown("---")
