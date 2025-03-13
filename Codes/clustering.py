@@ -111,16 +111,26 @@ if 'data' in locals() and data is not None:
     
     with tabs[2]:
         st.subheader("Analyse Comparative et Détection des Déviations")
-
-        # Fonction pour obtenir les statistiques
-        def get_stats(df, batch_name):
-            df = df.drop(columns=['Time'], errors='ignore')  # Exclure la colonne 'Time' si elle existe
-            stats = df.describe().T
-            stats["Batch"] = batch_name
-            return stats.reset_index()  # Réinitialisation de l'index pour un affichage propre
         
         # 🔹 Chargement et préparation des données
         st.subheader("🔍 Clustering des Batchs")
+
+        # Menu dépliant pour choisir l'option de clustering
+        with st.expander("Choisissez votre option de clustering"):
+            option = st.radio(
+                "Sur quelles variables souhaitez-vous effectuer le clustering ?",
+                options=["Clustering sur la distribution des températures", "Clustering sur les taux d'impureté"]
+            )
+
+        # Fonction pour obtenir les statistiques
+        def get_stats(df, batch_name):
+            if option == "Clustering sur la distribution des températures":
+                df = df.drop(columns=['Time', "IMPURETE_A", "IMPURETE_B", "IMPURETE_C","IMPURITY_BATCH", "Niveau de la cuve", "Vitesse d'agitation", "Step"], errors='ignore')  # Exclure la colonne 'Time' si elle existe
+            else:
+                df = df.drop(columns=['Time', "Température fond de cuve", "Température haut de colonne", "Température réacteur","IMPURITY_BATCH", "Niveau de la cuve", "Vitesse d'agitation", "Step"], errors='ignore')
+            stats = df.describe().T
+            stats["Batch"] = batch_name
+            return stats.reset_index()  # Réinitialisation de l'index pour un affichage propre
         
         if 'data' in locals() and data is not None:
             # Suppression de la colonne Time et calcul des stats pour chaque batch
@@ -196,21 +206,25 @@ if 'data' in locals() and data is not None:
             # Créer un graphique de dispersion interactif avec Plotly
             fig = go.Figure()
             
-            fig.add_trace(go.Scatter(
-                x=df_clusters['PC1'], 
-                y=df_clusters['PC2'], 
-                mode='markers', 
-                marker=dict(color=df_clusters['Cluster'], colorscale='Viridis', size=8),
-                text=df_clusters['Batch'],  # Texte affiché au survol
-                customdata=df_clusters.index,  # Stocke les index des points pour la sélection
-                hoverinfo='text',  # Affiche uniquement le texte au survol
-                hovertemplate="Batch: %{text}<br>PC1: %{x}<br>PC2: %{y}<extra></extra>"
-            ))
+            # Ajouter une trace pour chaque cluster
+            for cluster_num in df_clusters['Cluster'].unique():
+                cluster_data = df_clusters[df_clusters['Cluster'] == cluster_num]
+                fig.add_trace(go.Scatter(
+                    x=cluster_data['PC1'], 
+                    y=cluster_data['PC2'], 
+                    mode='markers', 
+                    marker=dict(size=8),
+                    name=f"Cluster {cluster_num}",  # Nom de la légende pour ce cluster
+                    text=cluster_data['Batch'],  # Texte affiché au survol
+                    hoverinfo='text',  # Affiche uniquement le texte au survol
+                    hovertemplate="Batch: %{text}<br>PC1: %{x}<br>PC2: %{y}<extra></extra>"
+                ))
             
             fig.update_layout(
                 title="Clustering des Batchs",
                 xaxis_title="Composante principale 1",
                 yaxis_title="Composante principale 2",
+                legend_title="Clusters", 
                 dragmode='select',  # Permet de sélectionner une zone
                 selectdirection='any',  # Permet la sélection dans n'importe quelle direction
             )
