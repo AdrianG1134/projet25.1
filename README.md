@@ -1,8 +1,9 @@
 # MARATHONDUWEB
 ## Apprenti·e·s chimistes
-
-Commanditaire : Sanofi
 https://www.marathonduweb.fr/blog/2025-11/apprenti-e-s-chimistes-32
+
+Commanditaire : Sanofi https://www.sanofi.com/fr
+
 
 ## Contexte  
 SANOFI, troisième entreprise mondiale du secteur de la santé en termes de chiffre d’affaires, produit des médicaments et des vaccins. L'objectif de ce projet est d’**identifier les déviations de procédés** en analysant l'évolution de la **température** lors de la production, afin de détecter des anomalies comme la production d’impuretés.  
