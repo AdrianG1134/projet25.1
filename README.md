@@ -29,8 +29,11 @@ Approches possibles : **XGBoost**, régressions, autres modèles.
 
 ## Installation et Utilisation  
 ### Prérequis  
+Si pas utilisation de [Snowflake](https://www.snowflake.com/fr/):
 - **Python 3.x** installé  
 - **pip** installé  
+ ```bash
+  streamlit run app.py
 
 ### Installation  
 1. **Cloner le projet**  
